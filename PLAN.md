@@ -25,10 +25,12 @@ Key gameplay challenge: Can players collect and craft tokens from nearby locatio
 - [x] Removed random Caches, Spawns and popups.
 - [x] larger grid rendering
 - [x] cleanded up UI
-- [] draw the player's location on the map
-- [] draw a rectangle representing one cell on the map
-- [] use loops to draw a whole grid of cells on the map
-- [] reskin of tokens and relocation of tokens being help (UI fixes)
+- [x] draw the player's location on the map
+- [x] draw a rectangle representing one cell on the map
+- [x] use loops to draw a whole grid of cells on the map
+- [x] reskin of tokens and relocation of tokens being help (UI fixes)
+- [x] Token spawn
+- [x] Visual token rendering
 
 - ...
 
