@@ -1,12 +1,101 @@
-#controlPanel {
-  padding: 1rem;
+/* General Layout */
+body {
+  font-family: "Inter", sans-serif;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  background-color: #f8f8f8;
 }
 
 #statusPanel {
   padding: 1rem;
+  background-color: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  text-align: center;
 }
 
 #map {
   width: 100%;
-  height: 80vh;
+  /* Use remaining viewport height */
+  flex-grow: 1;
+  min-height: 60vh;
+}
+
+/* Player Marker Styling */
+.player-icon-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.player-icon {
+  background-color: #ef4444; /* Red */
+  color: white;
+  font-weight: bold;
+  border-radius: 50%;
+  padding: 5px 10px;
+  border: 3px solid #7f1d1d;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  white-space: nowrap;
+  transform: translate(-50%, -50%); /* Center the div on the lat/lng */
+}
+
+/* Token Display Styling (Custom DivIcon) */
+.custom-token-icon {
+  /* Required to override Leaflet default positioning */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  pointer-events: all; /* Ensure clicks register on the token */
+}
+
+.token-icon {
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  color: white;
+  font-size: 10px;
+  font-weight: bold;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform 0.1s;
+  user-select: none;
+  cursor: default;
+}
+
+.token-icon.interactable {
+  cursor: pointer;
+}
+
+.token-icon.interactable:hover {
+  transform: scale(1.1);
+}
+
+/* Color coding for token values */
+.token-value-1 {
+  background-color: #4caf50;
+} /* Green */
+.token-value-2 {
+  background-color: #2196f3;
+} /* Blue */
+.token-value-4 {
+  background-color: #ffc107;
+} /* Yellow */
+.token-value-8 {
+  background-color: #ff5722;
+} /* Orange */
+.token-value-16 {
+  background-color: #9c27b0;
+} /* Purple */
+/* ... more values can be added if needed ... */
+
+/* For tokens outside interaction radius (optional visual cue) */
+.token-icon.non-interactable {
+  opacity: 0.6;
 }

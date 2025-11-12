@@ -3,48 +3,77 @@ import leaflet from "leaflet";
 
 // Style sheets
 import "leaflet/dist/leaflet.css"; // supporting style for Leaflet
-import "./style.css"; // student-controlled page style
+import "./style.css"; // custom page style
 
 // Fix missing marker images
-import "./_leafletWorkaround.ts"; // fixes for missing Leaflet images
+import "./_leafletWorkaround.ts";
 
-// Import our luck function
-import luck from "./_luck.ts";
+// Import our luck function (needed for later use, but imported now)
+import _luck from "./_luck.ts";
+
+// --- Game Configuration & Constants ---
+
+// Our classroom location (fixed player location)
+const CLASSROOM_LATLNG = leaflet.latLng(
+  36.997936938057016,
+  -122.05703507501151,
+);
+const TILE_DEGREES = 1e-4; // Grid cell size (approx. 10m x 10m)
+const GAMEPLAY_ZOOM_LEVEL = 19;
+const RENDER_RADIUS = 20; // Number of cells to render around the player to cover the screen
+
+// --- Global State ---
+
+// Map to store Leaflet layer objects (rectangles) for the grid
+const cellLayers: Map<string, leaflet.Rectangle> = new Map();
+
+// --- Utility Functions ---
+
+/** Converts i, j coordinates to a unique string key. */
+function getCellKey(i: number, j: number): string {
+  return `${i},${j}`;
+}
+
+/** Converts a Leaflet LatLng object into grid coordinates {i, j}. (Not used yet, but ready) */
+function _latLngToCell(latLng: leaflet.LatLng): { i: number; j: number } {
+  const origin = CLASSROOM_LATLNG;
+  const i = Math.floor((latLng.lat - origin.lat) / TILE_DEGREES);
+  const j = Math.floor((latLng.lng - origin.lng) / TILE_DEGREES);
+  return { i, j };
+}
+
+/** Calculates the latitude/longitude bounds for a given cell. */
+function getCellBounds(i: number, j: number): leaflet.LatLngBounds {
+  const origin = CLASSROOM_LATLNG;
+  return leaflet.latLngBounds([
+    [origin.lat + i * TILE_DEGREES, origin.lng + j * TILE_DEGREES],
+    [
+      origin.lat + (i + 1) * TILE_DEGREES,
+      origin.lng + (j + 1) * TILE_DEGREES,
+    ],
+  ]);
+}
+
+// --- Map and Grid Rendering ---
 
 // Create basic UI elements
-
-const controlPanelDiv = document.createElement("div");
-controlPanelDiv.id = "controlPanel";
-document.body.append(controlPanelDiv);
+const statusPanelDiv = document.createElement("div");
+statusPanelDiv.id = "statusPanel";
+document.body.append(statusPanelDiv);
 
 const mapDiv = document.createElement("div");
 mapDiv.id = "map";
 document.body.append(mapDiv);
 
-const statusPanelDiv = document.createElement("div");
-statusPanelDiv.id = "statusPanel";
-document.body.append(statusPanelDiv);
-
-// Our classroom location
-const CLASSROOM_LATLNG = leaflet.latLng(
-  36.997936938057016,
-  -122.05703507501151,
-);
-
-// Tunable gameplay parameters
-const GAMEPLAY_ZOOM_LEVEL = 19;
-const TILE_DEGREES = 1e-4;
-const NEIGHBORHOOD_SIZE = 8;
-const CACHE_SPAWN_PROBABILITY = 0.1;
-
-// Create the map (element with id "map" is defined in index.html)
+// Create the map
 const map = leaflet.map(mapDiv, {
   center: CLASSROOM_LATLNG,
   zoom: GAMEPLAY_ZOOM_LEVEL,
   minZoom: GAMEPLAY_ZOOM_LEVEL,
   maxZoom: GAMEPLAY_ZOOM_LEVEL,
-  zoomControl: false,
+  zoomControl: false, // Disable map scrolling/zooming to fix the game area
   scrollWheelZoom: false,
+  dragging: false, // Prevent dragging
 });
 
 // Populate the map with a background tile layer
@@ -56,60 +85,34 @@ leaflet
   })
   .addTo(map);
 
-// Add a marker to represent the player
-const playerMarker = leaflet.marker(CLASSROOM_LATLNG);
-playerMarker.bindTooltip("That's you!");
-playerMarker.addTo(map);
+/** Renders a single cell's boundary. */
+function renderCell(i: number, j: number): void {
+  const key = getCellKey(i, j);
+  const bounds = getCellBounds(i, j);
 
-// Display the player's points
-let playerPoints = 0;
-statusPanelDiv.innerHTML = "No points yet...";
-
-// Add caches to the map by cell numbers
-function spawnCache(i: number, j: number) {
-  // Convert cell numbers into lat/lng bounds
-  const origin = CLASSROOM_LATLNG;
-  const bounds = leaflet.latLngBounds([
-    [origin.lat + i * TILE_DEGREES, origin.lng + j * TILE_DEGREES],
-    [origin.lat + (i + 1) * TILE_DEGREES, origin.lng + (j + 1) * TILE_DEGREES],
-  ]);
-
-  // Add a rectangle to the map to represent the cache
-  const rect = leaflet.rectangle(bounds);
-  rect.addTo(map);
-
-  // Handle interactions with the cache
-  rect.bindPopup(() => {
-    // Each cache has a random point value, mutable by the player
-    let pointValue = Math.floor(luck([i, j, "initialValue"].toString()) * 100);
-
-    // The popup offers a description and button
-    const popupDiv = document.createElement("div");
-    popupDiv.innerHTML = `
-                <div>There is a cache here at "${i},${j}". It has value <span id="value">${pointValue}</span>.</div>
-                <button id="poke">poke</button>`;
-
-    // Clicking the button decrements the cache's value and increments the player's points
-    popupDiv
-      .querySelector<HTMLButtonElement>("#poke")!
-      .addEventListener("click", () => {
-        pointValue--;
-        popupDiv.querySelector<HTMLSpanElement>("#value")!.innerHTML =
-          pointValue.toString();
-        playerPoints++;
-        statusPanelDiv.innerHTML = `${playerPoints} points accumulated`;
-      });
-
-    return popupDiv;
+  // Render/Update Cell Boundary
+  const rect = leaflet.rectangle(bounds, {
+    fillOpacity: 0.1,
+    weight: 1,
+    color: "#CCC",
+    fillColor: "#FFF",
   });
+  rect.addTo(map);
+  cellLayers.set(key, rect);
+
+  // Placeholder: Click handler will be added in Push 3
+  rect.on("click", () => console.log(`Clicked cell ${i}, ${j}`));
 }
 
-// Look around the player's neighborhood for caches to spawn
-for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
-  for (let j = -NEIGHBORHOOD_SIZE; j < NEIGHBORHOOD_SIZE; j++) {
-    // If location i,j is lucky enough, spawn a cache!
-    if (luck([i, j].toString()) < CACHE_SPAWN_PROBABILITY) {
-      spawnCache(i, j);
+/** Main rendering loop to draw the initial grid (map edge to edge). */
+function renderMapGrid() {
+  for (let i = -RENDER_RADIUS; i <= RENDER_RADIUS; i++) {
+    for (let j = -RENDER_RADIUS; j <= RENDER_RADIUS; j++) {
+      renderCell(i, j);
     }
   }
 }
+
+// Initial Setup Calls
+statusPanelDiv.innerHTML = "Game Loading...";
+renderMapGrid();
