@@ -100,7 +100,7 @@ type CellState = {
 const cellStates = new Map<string, CellState>();
 
 // Player Location State
-let playerLatLng = INITIAL_PLAYER_LATLNG; // D3.b: Player is FIXED in this intermediate step.
+let playerLatLng = INITIAL_PLAYER_LATLNG;
 let heldToken: number | null = null; // null for empty, number for value
 
 // --- UI ELEMENT SETUP ---
@@ -110,12 +110,11 @@ const appContainer = document.createElement("div");
 appContainer.className = "app-container";
 document.body.append(appContainer);
 
-// D3.b Change: Control panel remains, but only for status in this commit
+// D3.b Change: Control panel now includes movement buttons
 const controlPanelDiv = document.createElement("div");
 controlPanelDiv.id = "controlPanel";
-// Adjust styling for better positioning and visibility
 controlPanelDiv.className =
-  "p-3 bg-white shadow-xl z-[1000] sticky top-0 flex flex-col items-center justify-center space-y-1";
+  "p-3 bg-white shadow-xl z-[1000] sticky top-0 flex flex-col items-center justify-center space-y-2";
 appContainer.append(controlPanelDiv);
 
 const mapDiv = document.createElement("div");
@@ -134,7 +133,11 @@ const map = leaflet.map(mapDiv, {
   minZoom: GAMEPLAY_ZOOM_LEVEL - 2, // Allow some zoom freedom
   maxZoom: GAMEPLAY_ZOOM_LEVEL + 2, // Allow some zoom freedom
   zoomControl: true,
-  scrollWheelZoom: true,
+  // Disable drag, double click, and touch zoom so movement is purely based on controls/buttons
+  dragging: false,
+  touchZoom: false,
+  doubleClickZoom: false,
+  scrollWheelZoom: false,
 });
 
 // Populate the map with a background tile layer
@@ -434,20 +437,53 @@ function showMessage(
 }
 
 /**
- * D3.b: Updates the player's position and map marker. In this intermediate commit,
- * the player's position is not changed by user controls, but this function
- * updates the marker if the playerLatLng variable is modified internally.
- * Renamed to start with underscore to satisfy Deno linting rule 'no-unused-vars'.
+ * D3.b: Updates the player's position and map marker, and crucially, pans the map.
+ * Panning the map triggers the 'moveend' event, which causes the memoryless cells to re-render.
  * @param newLatLng The new geographical position of the player.
  */
-function _updatePlayerPosition(newLatLng: leaflet.LatLng): void {
+function updatePlayerPosition(newLatLng: leaflet.LatLng): void {
   playerLatLng = newLatLng;
 
-  // Update the player marker position
+  // 1. Update the player marker position
   playerMarker.setLatLng(playerLatLng);
 
-  // Update status panel
+  // 2. Pan the map to the new position (this triggers renderVisibleCells via 'moveend')
+  map.panTo(playerLatLng);
+
+  // 3. Update status panel
   updateStatusPanel();
+}
+
+/**
+ * D3.b: Calculates the new LatLng based on the current player position and a direction
+ * and calls updatePlayerPosition.
+ * @param direction The direction to move ('north', 'south', 'east', 'west').
+ */
+function movePlayer(direction: "north" | "south" | "east" | "west"): void {
+  let latDelta = 0;
+  let lngDelta = 0;
+
+  // Calculate LatLng delta based on the TILE_DEGREES step size
+  switch (direction) {
+    case "north":
+      latDelta = TILE_DEGREES;
+      break;
+    case "south":
+      latDelta = -TILE_DEGREES;
+      break;
+    case "east":
+      lngDelta = TILE_DEGREES;
+      break;
+    case "west":
+      lngDelta = -TILE_DEGREES;
+      break;
+  }
+
+  const newLat = playerLatLng.lat + latDelta;
+  const newLng = playerLatLng.lng + lngDelta;
+  const newLatLng = leaflet.latLng(newLat, newLng);
+
+  updatePlayerPosition(newLatLng);
 }
 
 /**
@@ -456,8 +492,6 @@ function _updatePlayerPosition(newLatLng: leaflet.LatLng): void {
  */
 function renderVisibleCells(): void {
   // 1. Cleanup: Remove all old cell layers from the map and clear the state map.
-  // This enforces the "memoryless" requirement by forgetting state when cells leave the screen.
-  // Renamed 'id' to '_id' to satisfy Deno linting rule 'no-unused-vars'.
   for (const [_id, state] of cellStates.entries()) {
     if (state.rect) map.removeLayer(state.rect);
     if (state.marker) map.removeLayer(state.marker);
@@ -503,17 +537,92 @@ function renderVisibleCells(): void {
 }
 
 /**
+ * Creates and attaches the directional buttons to the control panel.
+ */
+function setupControls(): void {
+  // Button styling base class
+  const buttonClass =
+    "p-3 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-full shadow-lg transition duration-200 w-12 h-12 flex items-center justify-center text-xl";
+
+  // Layout for the directional pad (using Tailwind Grid)
+  controlPanelDiv.innerHTML = `
+        <div class="grid grid-cols-3 grid-rows-3 gap-1 md:gap-2">
+            <div class="col-start-2 row-start-1">
+                <button id="move-north" class="${buttonClass}">↑</button>
+            </div>
+            <div class="col-start-1 row-start-2">
+                <button id="move-west" class="${buttonClass}">←</button>
+            </div>
+            <div class="col-start-3 row-start-2">
+                <button id="move-east" class="${buttonClass}">→</button>
+            </div>
+            <div class="col-start-2 row-start-3">
+                <button id="move-south" class="${buttonClass}">↓</button>
+            </div>
+        </div>
+        <p class="text-xs text-gray-500 mt-2">Use buttons or arrow/WASD keys to move.</p>
+    `;
+
+  // Attach event listeners
+  document.getElementById("move-north")?.addEventListener(
+    "click",
+    () => movePlayer("north"),
+  );
+  document.getElementById("move-south")?.addEventListener(
+    "click",
+    () => movePlayer("south"),
+  );
+  document.getElementById("move-east")?.addEventListener(
+    "click",
+    () => movePlayer("east"),
+  );
+  document.getElementById("move-west")?.addEventListener(
+    "click",
+    () => movePlayer("west"),
+  );
+
+  // Add keyboard controls
+  document.addEventListener("keydown", (e) => {
+    switch (e.key) {
+      case "ArrowUp":
+      case "w":
+      case "W":
+        movePlayer("north");
+        break;
+      case "ArrowDown":
+      case "s":
+      case "S":
+        movePlayer("south");
+        break;
+      case "ArrowLeft":
+      case "a":
+      case "A":
+        movePlayer("west");
+        break;
+      case "ArrowRight":
+      case "d":
+      case "D":
+        movePlayer("east");
+        break;
+    }
+  });
+}
+
+/**
  * D3.a cleanup: Initializes the game by setting up the map events.
  */
 function initializeGame(): void {
-  // D3.b: We attach the render function to map 'moveend'.
-  // This triggers when the user scrolls or when we programmatically move the map.
+  // 1. Setup controls (buttons and keyboard)
+  setupControls();
+
+  // 2. We attach the render function to map 'moveend'.
+  // This triggers when the player moves (via map.panTo) or if the user somehow scrolls.
   map.on("moveend", renderVisibleCells);
 
-  // 2. Initial status panel update
+  // 3. Initial status panel update
   updateStatusPanel();
 
-  // 3. Render initial cells (explicitly call the render function once at start)
+  // 4. Render initial cells (explicitly call the render function once at start)
   renderVisibleCells();
 }
 

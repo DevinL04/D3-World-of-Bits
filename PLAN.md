@@ -34,10 +34,10 @@ Key gameplay challenge: Can players collect and craft tokens from nearby locatio
 - [x] earth spanning grid
 - [x] zoom in/out buttons
 - [x] memoryless rendering
-- [] move player
-- [] directional buttons
-- [] map panning to follow player
-
+- [x] move player
+- [x] directional buttons
+- [x] map panning to follow player
+- [x] confirm memoryless rendering
 - ...
 
 ## D3.b: ...
