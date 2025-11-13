@@ -13,42 +13,79 @@ import luck from "./_luck.ts";
 type WindowWithTailwind = Window & { tailwind: { config: object } };
 
 // We must load the Tailwind CDN and configuration here since it was removed from index.html
-if (typeof window !== "undefined" && typeof document !== "undefined") {
-  const tailwindScript = document.createElement("script");
-  tailwindScript.src = "https://cdn.tailwindcss.com";
-  document.head.appendChild(tailwindScript);
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    const tailwindScript = document.createElement('script');
+    tailwindScript.src = 'https://cdn.tailwindcss.com';
+    document.head.appendChild(tailwindScript);
 
-  // Set up configuration after Tailwind is loaded (using a listener for safety)
-  tailwindScript.onload = () => {
-    // FIX: Use double assertion to explicitly tell TypeScript that 'tailwind' exists on window after script load.
-    ((window as unknown) as WindowWithTailwind).tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ["Inter", "sans-serif"],
-          },
-        },
-      },
+    // Set up configuration after Tailwind is loaded (using a listener for safety)
+    tailwindScript.onload = () => {
+        // FIX: Use double assertion to explicitly tell TypeScript that 'tailwind' exists on window after script load.
+        ((window as unknown) as WindowWithTailwind).tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        };
     };
-  };
 }
+
 
 // --- CONSTANTS AND CONFIGURATION ---
 
-// Our classroom location (fixed player location)
-const CLASSROOM_LATLNG = leaflet.latLng(
+// D3.b Change: The player starts here, but the grid is anchored at Null Island
+const INITIAL_PLAYER_LATLNG = leaflet.latLng(
   36.997936938057016,
   -122.05703507501151,
 );
+const NULL_ISLAND_LATLNG = leaflet.latLng(0, 0); // D3.b: New anchor for the earth-spanning grid
 
 // Tunable gameplay parameters
 const GAMEPLAY_ZOOM_LEVEL = 19;
 const TILE_DEGREES = 1e-4; // Grid cell size (approx 10m)
-const MAP_RADIUS = 50; // Total cells to render around the player (50x50 block)
+// D3.b Change: MAP_RADIUS is no longer used for a fixed draw loop, but INTERACTION_RADIUS remains important
 const INTERACTION_RADIUS = 3; // Max distance in cells the player can interact
 const INITIAL_SPAWN_PROBABILITY = 0.15;
 const BASE_TOKEN_VALUES = [1, 2]; // Tokens can start as 1 or 2 (powers of 2)
-const WIN_CONDITION = 16; // Game detects when player has a token of this value or higher
+const WIN_CONDITION = 16384; // D3.b Challenge: Increased win condition to encourage farming
+
+// --- TYPES AND COORDINATE UTILITIES ---
+
+// D3.b Change: New type for grid coordinates
+type GridCell = { i: number; j: number };
+
+/**
+ * Converts a continuous LatLng coordinate to its discrete grid cell identifier (i, j).
+ * The grid is anchored at Null Island (0, 0).
+ * @param latlng The geographical coordinates.
+ * @returns The GridCell {i, j} identifier.
+ */
+function latLngToGridCell(latlng: leaflet.LatLng): GridCell {
+    const i = Math.floor((latlng.lng - NULL_ISLAND_LATLNG.lng) / TILE_DEGREES);
+    const j = Math.floor((latlng.lat - NULL_ISLAND_LATLNG.lat) / TILE_DEGREES);
+    return { i, j };
+}
+
+/**
+ * Converts a grid cell identifier (i, j) back to its geographical bounds.
+ * @param cell The GridCell {i, j} identifier.
+ * @returns The Leaflet LatLngBounds object for the cell.
+ */
+function gridCellToBounds(cell: GridCell): leaflet.LatLngBounds {
+    const latStart = NULL_ISLAND_LATLNG.lat + cell.j * TILE_DEGREES;
+    const latEnd = NULL_ISLAND_LATLNG.lat + (cell.j + 1) * TILE_DEGREES;
+    const lngStart = NULL_ISLAND_LATLNG.lng + cell.i * TILE_DEGREES;
+    const lngEnd = NULL_ISLAND_LATLNG.lng + (cell.i + 1) * TILE_DEGREES;
+
+    // The order for Leaflet LatLngBounds is [[south-west.lat, south-west.lng], [north-east.lat, north-east.lng]]
+    return leaflet.latLngBounds(
+        [latStart, lngStart],
+        [latEnd, lngEnd]
+    );
+}
 
 // --- GAME STATE ---
 
@@ -59,10 +96,12 @@ type CellState = {
   marker: leaflet.Marker | null; // Stores the token marker directly
 };
 
-// Map to hold the state of all cells, keyed by "i,j"
+// Map to hold the state of all **visible** cells, keyed by "i,j"
+// D3.b Change: This map now only holds VISIBLE cells (Memoryless requirement)
 const cellStates = new Map<string, CellState>();
 
-// Player Inventory State
+// Player Location State
+let playerLatLng = INITIAL_PLAYER_LATLNG; // D3.b: Player is FIXED in this intermediate step.
 let heldToken: number | null = null; // null for empty, number for value
 
 // --- UI ELEMENT SETUP ---
@@ -71,6 +110,14 @@ let heldToken: number | null = null; // null for empty, number for value
 const appContainer = document.createElement("div");
 appContainer.className = "app-container";
 document.body.append(appContainer);
+
+// D3.b Change: Control panel remains, but only for status in this commit
+const controlPanelDiv = document.createElement("div");
+controlPanelDiv.id = "controlPanel";
+// Adjust styling for better positioning and visibility
+controlPanelDiv.className = "p-3 bg-white shadow-xl z-[1000] sticky top-0 flex flex-col items-center justify-center space-y-1";
+appContainer.append(controlPanelDiv);
+
 
 const mapDiv = document.createElement("div");
 mapDiv.id = "map";
@@ -83,12 +130,12 @@ appContainer.append(statusPanelDiv);
 // --- MAP INITIALIZATION ---
 
 const map = leaflet.map(mapDiv, {
-  center: CLASSROOM_LATLNG,
+  center: INITIAL_PLAYER_LATLNG, // Map starts centered on the player
   zoom: GAMEPLAY_ZOOM_LEVEL,
-  minZoom: GAMEPLAY_ZOOM_LEVEL,
-  maxZoom: GAMEPLAY_ZOOM_LEVEL,
-  zoomControl: false,
-  scrollWheelZoom: true, // Allow scrolling to see edges of the rendered area
+  minZoom: GAMEPLAY_ZOOM_LEVEL - 2, // Allow some zoom freedom
+  maxZoom: GAMEPLAY_ZOOM_LEVEL + 2, // Allow some zoom freedom
+  zoomControl: true,
+  scrollWheelZoom: true,
 });
 
 // Populate the map with a background tile layer
@@ -100,31 +147,25 @@ leaflet
   })
   .addTo(map);
 
-// Add a marker to represent the player (fixed location)
-const playerMarker = leaflet.marker(CLASSROOM_LATLNG);
-playerMarker.bindTooltip("That's you!", {
-  permanent: true,
-  direction: "right",
-});
+// Add a marker to represent the player
+const playerMarker = leaflet.marker(playerLatLng);
+playerMarker.bindTooltip("That's you!", { permanent: true, direction: 'right' });
 playerMarker.addTo(map);
 
 // --- GAME MECHANICS AND UTILITIES ---
 
 /**
  * Deterministically calculates the initial token value for a cell based on its coordinates.
- * This ensures consistency across page loads.
  * @param i The grid x-coordinate.
  * @param j The grid y-coordinate.
  * @returns The token value (1 or 2) or null if no token spawns.
  */
 function getInitialTokenValue(i: number, j: number): number | null {
-  const spawnSituation = [i, j, "initial_spawn_d3a"].toString();
+  const spawnSituation = [i, j, "initial_spawn_d3b"].toString(); // D3.b situation key
   if (luck(spawnSituation) < INITIAL_SPAWN_PROBABILITY) {
     // Deterministically choose a base value (1 or 2)
-    const valueChoiceSituation = [i, j, "value_choice_d3a"].toString();
-    const valueIndex = Math.floor(
-      luck(valueChoiceSituation) * BASE_TOKEN_VALUES.length,
-    );
+    const valueChoiceSituation = [i, j, "value_choice_d3b"].toString(); // D3.b situation key
+    const valueIndex = Math.floor(luck(valueChoiceSituation) * BASE_TOKEN_VALUES.length);
     return BASE_TOKEN_VALUES[valueIndex];
   }
   return null;
@@ -136,15 +177,15 @@ function getInitialTokenValue(i: number, j: number): number | null {
  * @returns A Leaflet DivIcon.
  */
 function getCellDivIcon(value: number | null): leaflet.DivIcon {
-  const color = value ? `hsl(${Math.log2(value) * 60}, 80%, 30%)` : "#ccc";
-  const displayValue = value ? value.toString() : "";
+  const color = value ? `hsl(${Math.log2(value) * 60}, 80%, 30%)` : '#ccc';
+  const displayValue = value ? value.toString() : '';
 
   // Use a DivIcon to display the token value constantly inside the cell
   const html = `
     <div style="
       width: 100%; height: 100%;
       display: flex; justify-content: center; align-items: center;
-      background-color: ${value ? "rgba(255, 255, 255, 0.8)" : "transparent"};
+      background-color: ${value ? 'rgba(255, 255, 255, 0.8)' : 'transparent'};
       border: 2px solid ${color};
       border-radius: 6px;
       font-weight: bold;
@@ -159,11 +200,11 @@ function getCellDivIcon(value: number | null): leaflet.DivIcon {
   `;
 
   return leaflet.divIcon({
-    className: "cell-content-icon",
+    className: 'cell-content-icon',
     html: html,
     // Icon size set to be slightly smaller than the cell size for a nice fit
     iconSize: [40, 40],
-    iconAnchor: [20, 20], // Anchor at the center
+    iconAnchor: [20, 20] // Anchor at the center
   });
 }
 
@@ -179,28 +220,27 @@ function drawCell(i: number, j: number): void {
 
   if (!cellState) return;
 
-  // Leaflet coordinates use [lat, lng], which maps to [j, i] in our grid system
-  const origin = CLASSROOM_LATLNG;
-  const bounds = leaflet.latLngBounds([
-    [origin.lat + j * TILE_DEGREES, origin.lng + i * TILE_DEGREES],
-    [origin.lat + (j + 1) * TILE_DEGREES, origin.lng + (i + 1) * TILE_DEGREES],
-  ]);
+  const bounds = gridCellToBounds({ i, j });
 
-  const isInteractable = Math.abs(i) <= INTERACTION_RADIUS &&
-    Math.abs(j) <= INTERACTION_RADIUS;
+  const playerCell = latLngToGridCell(playerLatLng);
+  const iDelta = Math.abs(i - playerCell.i);
+  const jDelta = Math.abs(j - playerCell.j);
+  const distance = Math.max(iDelta, jDelta);
+
+  const isInteractable = distance <= INTERACTION_RADIUS;
   const cellColor = cellState.tokenValue
-    ? `hsl(${Math.log2(cellState.tokenValue) * 60}, 80%, 50%)` // Dynamic color based on value
+    ? `hsl(${Math.log2(cellState.tokenValue) * 60}, 80%, 50%)`
     : isInteractable
-    ? "rgba(70, 130, 180, 0.1)" // Light steel blue if empty and interactable
-    : "rgba(0, 0, 0, 0.05)"; // Light grey if outside range
+      ? 'rgba(70, 130, 180, 0.1)'
+      : 'rgba(0, 0, 0, 0.05)';
 
   const rectOptions: leaflet.PolylineOptions = {
-    color: isInteractable ? "#4682b4" : "#333", // Steel Blue or Dark Grey
+    color: isInteractable ? '#4682b4' : '#333',
     weight: isInteractable ? 2 : 0.5,
     opacity: 1,
-    fillOpacity: cellState.tokenValue ? 0.5 : (isInteractable ? 0.1 : 0), // Tokens are more opaque
+    fillOpacity: cellState.tokenValue ? 0.5 : (isInteractable ? 0.1 : 0),
     fillColor: cellColor,
-    className: isInteractable ? "interactable-cell" : "non-interactable-cell",
+    className: isInteractable ? 'interactable-cell' : 'non-interactable-cell',
   };
 
   if (cellState.rect) {
@@ -209,16 +249,13 @@ function drawCell(i: number, j: number): void {
 
     // Remove existing marker
     if (cellState.marker) {
-      map.removeLayer(cellState.marker);
-      cellState.marker = null;
+        map.removeLayer(cellState.marker);
+        cellState.marker = null;
     }
     // Only add a visible marker if there's a token
     if (cellState.tokenValue !== null) {
       const center = bounds.getCenter();
-      const marker = leaflet.marker(center, {
-        icon: getCellDivIcon(cellState.tokenValue),
-        interactive: false,
-      });
+      const marker = leaflet.marker(center, { icon: getCellDivIcon(cellState.tokenValue), interactive: false });
       marker.addTo(map);
       // Store marker directly in state
       cellState.marker = marker;
@@ -230,15 +267,12 @@ function drawCell(i: number, j: number): void {
     cellState.rect = rect;
 
     // Set up click handler
-    rect.on("click", () => handleCellClick(i, j));
+    rect.on('click', () => handleCellClick(i, j));
 
     // Initial marker placement
     if (cellState.tokenValue !== null) {
       const center = bounds.getCenter();
-      const marker = leaflet.marker(center, {
-        icon: getCellDivIcon(cellState.tokenValue),
-        interactive: false,
-      });
+      const marker = leaflet.marker(center, { icon: getCellDivIcon(cellState.tokenValue), interactive: false });
       marker.addTo(map);
       // Store marker directly in state
       cellState.marker = marker;
@@ -248,6 +282,7 @@ function drawCell(i: number, j: number): void {
   // Update the map state
   cellStates.set(id, cellState);
 }
+
 
 /**
  * Handles the game logic when a cell is clicked.
@@ -260,13 +295,14 @@ function handleCellClick(i: number, j: number): void {
 
   if (!cellState) return;
 
-  // 1. Check Interaction Radius
-  const distance = Math.max(Math.abs(i), Math.abs(j));
+  // 1. Check Interaction Radius (now relative to playerLatLng)
+  const playerCell = latLngToGridCell(playerLatLng);
+  const iDelta = Math.abs(i - playerCell.i);
+  const jDelta = Math.abs(j - playerCell.j);
+  const distance = Math.max(iDelta, jDelta);
+
   if (distance > INTERACTION_RADIUS) {
-    showMessage(
-      `That cell (${i},${j}) is too far away. You can only interact within ${INTERACTION_RADIUS} cells.`,
-      "error",
-    );
+    showMessage(`That cell (${i},${j}) is too far away. You can only interact within ${INTERACTION_RADIUS} cells.`, 'error');
     return;
   }
 
@@ -289,16 +325,11 @@ function handleCellClick(i: number, j: number): void {
 
       // 4. Game detects sufficient value
       if (heldToken >= WIN_CONDITION) {
-        showMessage(
-          `CONGRATULATIONS! You crafted a winning token of value ${heldToken}!`,
-          "win",
-        );
+        showMessage(`CONGRATULATIONS! You crafted a winning token of value ${heldToken}!`, 'win');
       }
+
     } else {
-      showMessage(
-        `Cannot craft. The cell token (${cellTokenValue}) must equal your held token (${heldToken}).`,
-        "error",
-      );
+      showMessage(`Cannot craft. The cell token (${cellTokenValue}) must equal your held token (${heldToken}).`, 'error');
       return; // Do not redraw if crafting failed
     }
   } else if (isPlayerHolding && isCellEmpty) {
@@ -308,7 +339,7 @@ function handleCellClick(i: number, j: number): void {
     showMessage(`Placed a token of value ${cellState.tokenValue}.`);
   } else if (!isPlayerHolding && isCellEmpty) {
     // --- DO NOTHING ---
-    showMessage("This cell is empty, and you are not holding a token.", "info");
+    showMessage("This cell is empty, and you are not holding a token.", 'info');
     return; // Do not redraw, nothing changed
   }
 
@@ -324,15 +355,21 @@ function updateStatusPanel(): void {
   const heldText = heldToken !== null
     ? `Holding: 🪙 Level ${heldToken}`
     : `Holding: 🚫 Empty`;
+  
+  const playerCell = latLngToGridCell(playerLatLng);
+  const locationText = `Location: (${playerCell.i}, ${playerCell.j})`;
 
   const winStatus = heldToken !== null && heldToken >= WIN_CONDITION
-    ? '<span class="text-green-600 font-bold ml-4">WIN DETECTED!</span>'
-    : "";
+    ? '<span class="text-green-600 font-bold ml-4">VICTORY ACHIEVED!</span>'
+    : '';
 
   statusPanelDiv.innerHTML = `
-    <div class="status-box flex justify-center items-center space-x-4">
-        <p class="p-2 bg-gray-100 rounded-lg shadow-inner">${heldText}</p>
-        ${winStatus}
+    <div class="status-box p-4 bg-gray-50 rounded-lg shadow-lg">
+        <div class="flex flex-wrap justify-between items-center text-sm md:text-base">
+            <p class="font-semibold text-blue-800">${locationText}</p>
+            <p class="font-bold text-gray-700">${heldText}</p>
+            ${winStatus}
+        </div>
     </div>
   `;
 }
@@ -342,64 +379,130 @@ function updateStatusPanel(): void {
  * @param message The message to display.
  * @param type 'info', 'error', or 'win'.
  */
-function showMessage(
-  message: string,
-  type: "info" | "error" | "win" = "info",
-): void {
-  const msgDiv = document.createElement("div");
-  msgDiv.className =
-    `message-box ${type} absolute top-0 left-1/2 transform -translate-x-1/2 mt-2 z-[1000] rounded-lg shadow-xl p-3`;
-  msgDiv.textContent = message;
+function showMessage(message: string, type: 'info' | 'error' | 'win' = 'info'): void {
+    const msgDiv = document.createElement('div');
+    const colorClass = {
+        'info': 'bg-blue-500',
+        'error': 'bg-red-500',
+        'win': 'bg-green-500',
+    }[type];
+    const icon = {
+        'info': 'ⓘ',
+        'error': '🛑',
+        'win': '🏆',
+    }[type];
+    
+    msgDiv.className = `message-box ${type} absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] rounded-lg shadow-xl p-3 text-white font-semibold flex items-center space-x-2 ${colorClass} opacity-100 transition-opacity duration-500`;
+    msgDiv.innerHTML = `<span>${icon}</span> <span>${message}</span>`;
 
-  // Get the status panel's direct parent (the body)
-  const parent = statusPanelDiv.parentElement || document.body;
+    // Get the status panel's direct parent (the body)
+    const parent = statusPanelDiv.parentElement || document.body;
 
-  // Remove existing temporary messages to ensure only one is shown
-  parent.querySelectorAll(".message-box").forEach((el) => el.remove());
+    // Remove existing temporary messages to ensure only one is shown
+    parent.querySelectorAll('.message-box').forEach(el => el.remove());
 
-  parent.appendChild(msgDiv);
+    parent.appendChild(msgDiv);
 
-  setTimeout(() => {
-    // Add a class to fade out before removing
-    msgDiv.style.opacity = "0";
     setTimeout(() => {
-      msgDiv.remove();
-    }, 500); // Wait for CSS transition to finish
-  }, type === "win" ? 5000 : 2500);
+        // Add a class to fade out before removing
+        msgDiv.style.opacity = '0';
+        setTimeout(() => {
+            msgDiv.remove();
+        }, 500); // Wait for CSS transition to finish
+    }, type === 'win' ? 5000 : 2500);
 }
-
-// --- GAME INITIALIZATION ---
 
 /**
- * Initializes the entire map grid and the game state.
+ * D3.b: Updates the player's position and map marker. In this intermediate commit,
+ * the player's position is not changed by user controls, but this function
+ * updates the marker if the playerLatLng variable is modified internally.
+ * Renamed to start with underscore to satisfy Deno linting rule 'no-unused-vars'.
+ * @param newLatLng The new geographical position of the player.
+ */
+function _updatePlayerPosition(newLatLng: leaflet.LatLng): void {
+    playerLatLng = newLatLng;
+
+    // Update the player marker position
+    playerMarker.setLatLng(playerLatLng);
+    
+    // Update status panel
+    updateStatusPanel();
+}
+
+
+/**
+ * D3.b: Removes all existing cell layers and re-renders new cells based on the
+ * current visible map bounds. This implements the memoryless behavior.
+ */
+function renderVisibleCells(): void {
+    // 1. Cleanup: Remove all old cell layers from the map and clear the state map.
+    // This enforces the "memoryless" requirement by forgetting state when cells leave the screen.
+    // Renamed 'id' to '_id' to satisfy Deno linting rule 'no-unused-vars'.
+    for (const [_id, state] of cellStates.entries()) {
+        if (state.rect) map.removeLayer(state.rect);
+        if (state.marker) map.removeLayer(state.marker);
+    }
+    cellStates.clear();
+
+    // 2. Determine Map Bounds
+    const bounds = map.getBounds();
+    const sw = bounds.getSouthWest();
+    const ne = bounds.getNorthEast();
+
+    // Convert bounds to grid cell range
+    const startCell = latLngToGridCell(sw);
+    const endCell = latLngToGridCell(ne);
+
+    // Ensure we iterate through the correct ranges.
+    // We intentionally over-draw by 1 cell on each side (min/max) to ensure full screen coverage.
+    const i_min = startCell.i - 1;
+    const i_max = endCell.i + 1;
+    // Latitudes (j) are reversed in the standard Leaflet bounds, so j_min is the bottom (smaller)
+    const j_min = startCell.j - 1;
+    const j_max = endCell.j + 1;
+
+    // 3. Spawn and Draw Visible Cells
+    for (let i = i_min; i <= i_max; i++) {
+        for (let j = j_min; j <= j_max; j++) {
+            const id = `${i},${j}`;
+
+            // 3a. Determine deterministic state (newly spawned)
+            const tokenValue = getInitialTokenValue(i, j);
+
+            // 3b. Initialize state and draw
+            cellStates.set(id, {
+                tokenValue: tokenValue,
+                rect: null, // will be set by drawCell
+                marker: null, // will be set by drawCell
+            });
+
+            drawCell(i, j);
+        }
+    }
+    updateStatusPanel();
+}
+
+/**
+ * D3.a cleanup: Initializes the game by setting up the map events.
  */
 function initializeGame(): void {
-  // 1. Populate initial deterministic state and draw cells
-  for (let i = -MAP_RADIUS; i <= MAP_RADIUS; i++) {
-    for (let j = -MAP_RADIUS; j <= MAP_RADIUS; j++) {
-      const id = `${i},${j}`;
-      const initialValue = getInitialTokenValue(i, j);
-
-      // Create initial state entry
-      cellStates.set(id, {
-        tokenValue: initialValue,
-        rect: null, // Leaflet object will be created in drawCell
-        marker: null, // Initial marker state
-      });
-      // Initial draw
-      drawCell(i, j);
-    }
-  }
-
+  // D3.b: We attach the render function to map 'moveend'. 
+  // This triggers when the user scrolls or when we programmatically move the map.
+  map.on('moveend', renderVisibleCells);
+  
   // 2. Initial status panel update
   updateStatusPanel();
+  
+  // 3. Render initial cells (explicitly call the render function once at start)
+  renderVisibleCells();
 }
+
 
 // Wait for the map to be ready before initializing the game logic
 map.whenReady(() => {
-  // Center the map view on the player's fixed location
-  map.setView(CLASSROOM_LATLNG, GAMEPLAY_ZOOM_LEVEL);
-  initializeGame();
+    // Center the map view on the player's fixed location
+    map.setView(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
+    initializeGame();
 });
 
 // A simple export to satisfy the module requirement, even if it's not used externally

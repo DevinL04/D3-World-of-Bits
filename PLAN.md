@@ -31,6 +31,12 @@ Key gameplay challenge: Can players collect and craft tokens from nearby locatio
 - [x] reskin of tokens and relocation of tokens being help (UI fixes)
 - [x] Token spawn
 - [x] Visual token rendering
+- [x] earth spanning grid
+- [x] zoom in/out buttons
+- [x] memoryless rendering
+- [] move player
+- [] directional buttons
+- [] map panning to follow player
 
 - ...
 
