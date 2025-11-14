@@ -38,6 +38,11 @@ Key gameplay challenge: Can players collect and craft tokens from nearby locatio
 - [x] directional buttons
 - [x] map panning to follow player
 - [x] confirm memoryless rendering
+- [x] Flyweight pattern
+- [x] Memento pattern
+- [] Persistent memory?
+- []
+- []
 - ...
 
 ## D3.b: ...
