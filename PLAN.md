@@ -40,7 +40,7 @@ Key gameplay challenge: Can players collect and craft tokens from nearby locatio
 - [x] confirm memoryless rendering
 - [x] Flyweight pattern
 - [x] Memento pattern
-- [] Persistent memory?
+- [x] Persistent memory?
 - []
 - []
 - ...
