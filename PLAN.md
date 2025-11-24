@@ -1,52 +1,66 @@
-# D3: {World of Bits}
+# D3: World of Bits — Project Plan
 
 # Game Design Vision
 
-Location based crafting game where players use the map to find and collect tokens from nearby grid cells. These tokens can be crafted with tokens of the same value to double the worth.
+Location-based crafting game where players use the map to find and collect tokens from nearby grid cells. These tokens can be crafted with tokens of the same value to double their worth.
 
 # Technologies
 
-- TypeScript for most game code, little to no explicit HTML, and all CSS collected in common `style.css` file
-- Deno and Vite for building
-- GitHub Actions + GitHub Pages for deployment automation
+- TypeScript for most game code; minimal HTML; all CSS in `style.css`
+- Deno + Vite for building
+- GitHub Actions + GitHub Pages for deployment
 
 # Assignments
 
-## D3.a: Core mechanics (token collection and crafting)
+## **D3.a — Core Mechanics**
 
-Key technical challenge: Can you assemble a map-based user interface using the Leaflet mapping framework?
-Key gameplay challenge: Can players collect and craft tokens from nearby locations to finally make one of sufficiently high value?
+**Goal:** Build map UI with Leaflet and allow basic token collection + crafting.
 
-### Steps
-
-- [x] copy main.ts to reference.ts for future reference
-- [x] delete everything in main.ts
-- [x] put a basic leaflet map on the screen
-- [x] Removed random Caches, Spawns and popups.
-- [x] larger grid rendering
-- [x] cleanded up UI
-- [x] draw the player's location on the map
-- [x] draw a rectangle representing one cell on the map
-- [x] use loops to draw a whole grid of cells on the map
-- [x] reskin of tokens and relocation of tokens being help (UI fixes)
+- [x] Copy `main.ts` to `reference.ts`
+- [x] Delete everything in `main.ts`
+- [x] Basic Leaflet map rendering
+- [x] Removed random caches, spawns, and popups
+- [x] Larger grid rendering
+- [x] UI cleanup
+- [x] Draw player's location
+- [x] Draw rectangle for a single cell
+- [x] Loop-based full grid rendering
 - [x] Token spawn
 - [x] Visual token rendering
-- [x] earth spanning grid
-- [x] zoom in/out buttons
-- [x] memoryless rendering
-- [x] move player
-- [x] directional buttons
-- [x] map panning to follow player
-- [x] confirm memoryless rendering
+- [x] Reskin tokens & improved UI positioning
+- [x] Deterministic luck-based spawning
+
+- [x] Confirm token pickup logic
+- [x] Confirm correct crafting logic
+
+## **D3.b — Globe-Spanning Gameplay**
+
+**Goal:** Movement, global coordinates, infinite grid spawning/despawning.
+
+- [x] Earth-spanning grid
+- [x] Zoom in/out buttons
+- [x] Memoryless rendering (cells reset when off-screen)
+- [x] Player movement functionality
+- [x] Directional movement buttons
+- [x] Map panning follows player
+- [x] Confirmed memoryless behavior
+
+- [x] Movement boundaries (if required)
+- [x] Ensure consistent despawn/respawn behavior under all zoom levels
+
+## **D3.c — Object Persistence**
+
+**Goal:** Use Flyweight + Memento patterns so cells keep state when off-screen.
+
 - [x] Flyweight pattern
 - [x] Memento pattern
 - [x] Persistent memory?
-- []
-- []
-- ...
 
-## D3.b: ...
+## **D3.d — Persistent Save Data (next assignment)**
 
-...
+**Goal:** Store persistent memory of modified cells across page loads.
 
-### 
+- [x] Designed system with `Map<cell, token>` so storing state will be one function call
+- [x] Geolocation API
+- [x] Facade design pattern
+- [x] Load and restore state on page open

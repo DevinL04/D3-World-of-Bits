@@ -52,6 +52,12 @@ const WIN_CONDITION = 16384;
 // --- TYPES AND COORDINATE UTILITIES ---
 
 type GridCell = { i: number; j: number };
+type LatLngLiteral = { lat: number; lng: number };
+type GameState = {
+  playerLatLng: LatLngLiteral;
+  heldToken: number | null;
+  modifiedCellStates: [string, number | null][]; // For persistence
+};
 
 /**
  * Converts a continuous LatLng coordinate to its discrete grid cell identifier (i, j).
@@ -95,6 +101,89 @@ const modifiedCellStates = new Map<string, number | null>();
 // Player Location State
 let playerLatLng = INITIAL_PLAYER_LATLNG;
 let heldToken: number | null = null;
+let currentMovementStrategy: "buttons" | "geolocation" = "buttons";
+let movementController: MovementControllerFacade | null = null; // Facade instance
+
+// --- PERSISTENCE (localStorage) ---
+
+const STORAGE_KEY = "gridcraft_gameState";
+
+/**
+ * Saves the current essential game state to localStorage.
+ */
+function saveGameState(): void {
+  const state: GameState = {
+    // FIX: Manually construct LatLngLiteral to resolve TS2339 error
+    playerLatLng: {
+      lat: playerLatLng.lat,
+      lng: playerLatLng.lng,
+    },
+    heldToken: heldToken,
+    // Convert Map to array of [key, value] pairs for JSON stringification
+    modifiedCellStates: Array.from(modifiedCellStates.entries()),
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+/**
+ * Loads the game state from localStorage, if available.
+ */
+function loadGameState(): boolean {
+  const savedState = localStorage.getItem(STORAGE_KEY);
+  if (savedState) {
+    try {
+      const state: GameState = JSON.parse(savedState);
+
+      // Restore player state
+      playerLatLng = leaflet.latLng(state.playerLatLng);
+      heldToken = state.heldToken;
+
+      // Restore modified cell states (Memento)
+      modifiedCellStates.clear();
+      state.modifiedCellStates.forEach(([key, value]) => {
+        modifiedCellStates.set(key, value);
+      });
+
+      console.log("Game state loaded successfully.");
+      return true;
+    } catch (e) {
+      console.error("Failed to parse saved game state:", e);
+      // Clear invalid state
+      localStorage.removeItem(STORAGE_KEY);
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Clears the game state from memory and localStorage, and resets to initial values.
+ */
+function startNewGame(): void {
+  // Clear persistence
+  localStorage.removeItem(STORAGE_KEY);
+
+  // Reset in-memory state
+  playerLatLng = INITIAL_PLAYER_LATLNG;
+  heldToken = null;
+  modifiedCellStates.clear();
+
+  // Re-initialize UI/Map
+  if (movementController) {
+    // Stop the old strategy (especially important for geolocation)
+    movementController.stop();
+    // Re-initialize with current strategy (it will default to 'buttons' unless overridden)
+    movementController = new MovementControllerFacade(
+      currentMovementStrategy,
+      updatePlayerPosition,
+      movePlayer,
+    );
+  }
+
+  // Must update position first to center map and trigger renderVisibleCells
+  updatePlayerPosition(INITIAL_PLAYER_LATLNG);
+  showMessage("New game started!", "info");
+}
 
 // --- UI ELEMENT SETUP ---
 
@@ -119,8 +208,9 @@ appContainer.append(statusPanelDiv);
 
 // --- MAP INITIALIZATION ---
 
+// Must be called with the potentially loaded playerLatLng
 const map = leaflet.map(mapDiv, {
-  center: INITIAL_PLAYER_LATLNG,
+  center: playerLatLng, // Use potentially loaded playerLatLng
   zoom: GAMEPLAY_ZOOM_LEVEL,
   minZoom: GAMEPLAY_ZOOM_LEVEL - 2,
   maxZoom: GAMEPLAY_ZOOM_LEVEL + 2,
@@ -308,6 +398,8 @@ function handleCellClick(i: number, j: number): void {
   const isCellEmpty = cellTokenValue === null;
   const isPlayerHolding = heldToken !== null;
 
+  let stateChanged = false;
+
   if (!isPlayerHolding && !isCellEmpty) {
     // --- PICKUP ---
     heldToken = cellTokenValue;
@@ -315,6 +407,7 @@ function handleCellClick(i: number, j: number): void {
     // D3.c Memento: Mark the cell as permanently empty in the persistent map
     modifiedCellStates.set(id, null);
     showMessage(`Picked up a token worth ${heldToken}!`);
+    stateChanged = true;
   } else if (isPlayerHolding && !isCellEmpty) {
     // --- CRAFTING ---
     if (heldToken === cellTokenValue) {
@@ -324,6 +417,7 @@ function handleCellClick(i: number, j: number): void {
       // D3.c Memento: Mark the consumed cell as permanently empty
       modifiedCellStates.set(id, null);
       showMessage(`CRAFTED! New token value: ${newTokenValue}.`);
+      stateChanged = true;
 
       // Game detects sufficient value
       if (heldToken >= WIN_CONDITION) {
@@ -346,6 +440,7 @@ function handleCellClick(i: number, j: number): void {
     // D3.c Memento: Store the new token value in the persistent map
     modifiedCellStates.set(id, cellState.tokenValue);
     showMessage(`Placed a token of value ${cellState.tokenValue}.`);
+    stateChanged = true;
   } else if (!isPlayerHolding && isCellEmpty) {
     // --- DO NOTHING ---
     showMessage("This cell is empty, and you are not holding a token.", "info");
@@ -353,8 +448,12 @@ function handleCellClick(i: number, j: number): void {
   }
 
   // Update UI and map
-  drawCell(i, j);
-  updateStatusPanel();
+  if (stateChanged) {
+    drawCell(i, j);
+    updateStatusPanel();
+    // Save game state after every action that modifies the memento map or held token
+    saveGameState();
+  }
 }
 
 /**
@@ -368,15 +467,20 @@ function updateStatusPanel(): void {
   const playerCell = latLngToGridCell(playerLatLng);
   const locationText = `Location: (${playerCell.i}, ${playerCell.j})`;
 
+  const movementStatus = currentMovementStrategy === "geolocation"
+    ? '<span class="text-green-600 font-bold">GPS Active</span>'
+    : '<span class="text-red-600 font-bold">Button Control</span>';
+
   const winStatus = heldToken !== null && heldToken >= WIN_CONDITION
     ? '<span class="text-green-600 font-bold ml-4">VICTORY ACHIEVED!</span>'
     : "";
 
   statusPanelDiv.innerHTML = `
     <div class="status-box p-4 bg-gray-50 rounded-lg shadow-lg">
-        <div class="flex flex-wrap justify-between items-center text-sm md:text-base">
+        <div class="flex flex-wrap justify-between items-center text-sm md:text-base space-x-4">
             <p class="font-semibold text-blue-800">${locationText}</p>
             <p class="font-bold text-gray-700">${heldText}</p>
+            <p class="font-bold text-gray-700">${movementStatus}</p>
             ${winStatus}
         </div>
     </div>
@@ -422,21 +526,28 @@ function showMessage(
 
 /**
  * Updates the player's position and map marker, and pans the map.
+ * This function is passed to the MovementControllerFacade.
  */
 function updatePlayerPosition(newLatLng: leaflet.LatLng): void {
-  playerLatLng = newLatLng;
+  // Only update if the position actually changed to prevent unnecessary re-renders/saves
+  if (!playerLatLng.equals(newLatLng)) {
+    playerLatLng = newLatLng;
 
-  playerMarker.setLatLng(playerLatLng);
+    playerMarker.setLatLng(playerLatLng);
 
-  // Pan the map to the new position (this triggers renderVisibleCells via 'moveend')
-  map.panTo(playerLatLng);
+    // Pan the map to the new position (this triggers renderVisibleCells via 'moveend')
+    map.panTo(playerLatLng);
 
-  updateStatusPanel();
+    updateStatusPanel();
+    // Save game state on movement
+    saveGameState();
+  }
 }
 
 /**
  * Calculates the new LatLng based on the current player position and a direction
  * and calls updatePlayerPosition.
+ * This function is used by the ButtonMovementStrategy.
  */
 function movePlayer(direction: "north" | "south" | "east" | "west"): void {
   let latDelta = 0;
@@ -517,94 +628,352 @@ function renderVisibleCells(): void {
   updateStatusPanel();
 }
 
+// --------------------------------------------------------------------------------
+// --- FACADE PATTERN IMPLEMENTATION FOR MOVEMENT CONTROL ---
+// --------------------------------------------------------------------------------
+
+// Movement Strategy Interface
+interface MovementStrategy {
+  init(): void;
+  stop(): void;
+}
+
 /**
- * Creates and attaches the directional buttons to the control panel.
+ * Strategy for button and keyboard based movement.
  */
-function setupControls(): void {
-  const buttonClass =
-    "p-3 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-full shadow-lg transition duration-200 w-12 h-12 flex items-center justify-center text-xl";
+class ButtonMovementStrategy implements MovementStrategy {
+  private moveCallback: (
+    direction: "north" | "south" | "east" | "west",
+  ) => void;
 
-  controlPanelDiv.innerHTML = `
-        <div class="grid grid-cols-3 grid-rows-3 gap-1 md:gap-2">
-            <div class="col-start-2 row-start-1">
-                <button id="move-north" class="${buttonClass}">↑</button>
-            </div>
-            <div class="col-start-1 row-start-2">
-                <button id="move-west" class="${buttonClass}">←</button>
-            </div>
-            <div class="col-start-3 row-start-2">
-                <button id="move-east" class="${buttonClass}">→</button>
-            </div>
-            <div class="col-start-2 row-start-3">
-                <button id="move-south" class="${buttonClass}">↓</button>
-            </div>
-        </div>
-        <p class="text-xs text-gray-500 mt-2">Use buttons or arrow/WASD keys to move.</p>
-    `;
+  constructor(
+    moveCallback: (direction: "north" | "south" | "east" | "west") => void,
+  ) {
+    this.moveCallback = moveCallback;
+  }
 
-  // Attach event listeners
-  document.getElementById("move-north")?.addEventListener(
-    "click",
-    () => movePlayer("north"),
-  );
-  document.getElementById("move-south")?.addEventListener(
-    "click",
-    () => movePlayer("south"),
-  );
-  document.getElementById("move-east")?.addEventListener(
-    "click",
-    () => movePlayer("east"),
-  );
-  document.getElementById("move-west")?.addEventListener(
-    "click",
-    () => movePlayer("west"),
-  );
+  init(): void {
+    this.setupButtonListeners();
+    this.setupKeyboardListeners();
+  }
 
-  // Add keyboard controls
-  document.addEventListener("keydown", (e) => {
+  stop(): void {
+    // We only remove the keyboard listener here, as the buttons are hidden/removed
+    // when this strategy is not active.
+    document.removeEventListener("keydown", this.keyboardHandler);
+  }
+
+  private setupButtonListeners(): void {
+    document.getElementById("move-north")?.addEventListener(
+      "click",
+      () => this.moveCallback("north"),
+    );
+    document.getElementById("move-south")?.addEventListener(
+      "click",
+      () => this.moveCallback("south"),
+    );
+    document.getElementById("move-east")?.addEventListener(
+      "click",
+      () => this.moveCallback("east"),
+    );
+    document.getElementById("move-west")?.addEventListener(
+      "click",
+      () => this.moveCallback("west"),
+    );
+  }
+
+  private keyboardHandler = (e: KeyboardEvent) => {
     switch (e.key) {
       case "ArrowUp":
       case "w":
       case "W":
-        movePlayer("north");
+        this.moveCallback("north");
         break;
       case "ArrowDown":
       case "s":
       case "S":
-        movePlayer("south");
+        this.moveCallback("south");
         break;
       case "ArrowLeft":
       case "a":
       case "A":
-        movePlayer("west");
+        this.moveCallback("west");
         break;
       case "ArrowRight":
       case "d":
       case "D":
-        movePlayer("east");
+        this.moveCallback("east");
         break;
     }
-  });
+  };
+
+  private setupKeyboardListeners(): void {
+    // Bind the handler once to allow for easy removal in stop()
+    document.addEventListener("keydown", this.keyboardHandler);
+  }
 }
 
 /**
- * Initializes the game by setting up the map events and controls.
+ * Strategy for geolocation-based movement using the browser API.
+ */
+class GeolocationMovementStrategy implements MovementStrategy {
+  private updatePositionCallback: (newLatLng: leaflet.LatLng) => void;
+  private watchId: number | null = null;
+  private lastReportedLatLng: leaflet.LatLng | null = null;
+  private readonly TILE_THRESHOLD_METERS = 10; // Approx tile size (TILE_DEGREES approx 10m)
+
+  constructor(updatePositionCallback: (newLatLng: leaflet.LatLng) => void) {
+    this.updatePositionCallback = updatePositionCallback;
+  }
+
+  init(): void {
+    if (!navigator.geolocation) {
+      showMessage("Geolocation is not supported by your browser.", "error");
+      return;
+    }
+
+    showMessage("Geolocation movement enabled. Start walking!", "info");
+
+    // Set initial last reported position to player's current position to prevent immediate jump
+    this.lastReportedLatLng = playerLatLng;
+
+    this.watchId = navigator.geolocation.watchPosition(
+      (position) => this.handleSuccess(position),
+      (error) => this.handleError(error),
+      {
+        enableHighAccuracy: true,
+        timeout: 5000,
+        maximumAge: 0,
+      },
+    );
+  }
+
+  stop(): void {
+    if (this.watchId !== null) {
+      navigator.geolocation.clearWatch(this.watchId);
+      this.watchId = null;
+      showMessage("Geolocation movement stopped.", "info");
+    }
+  }
+
+  private handleSuccess(position: GeolocationPosition): void {
+    const newLat = position.coords.latitude;
+    const newLng = position.coords.longitude;
+    const newLatLng = leaflet.latLng(newLat, newLng);
+
+    // Use a distance check to only update position when the player has moved significantly
+    // This simulates moving one game cell (approx 10m)
+    if (
+      this.lastReportedLatLng &&
+      this.lastReportedLatLng.distanceTo(newLatLng) < this.TILE_THRESHOLD_METERS
+    ) {
+      // Player hasn't moved far enough yet
+      return;
+    }
+
+    this.lastReportedLatLng = newLatLng;
+    this.updatePositionCallback(newLatLng);
+    showMessage(
+      `Moved to real-world location. Accuracy: ${
+        position.coords.accuracy.toFixed(1)
+      }m`,
+      "info",
+    );
+  }
+
+  private handleError(error: GeolocationPositionError): void {
+    let message = "Geolocation error. ";
+    switch (error.code) {
+      case error.PERMISSION_DENIED:
+        message += "You denied permission for Geolocation.";
+        break;
+      case error.POSITION_UNAVAILABLE:
+        message += "Location information is unavailable.";
+        break;
+      case error.TIMEOUT:
+        message += "The request to get user location timed out.";
+        break;
+      default:
+        message += "An unknown error occurred.";
+    }
+    showMessage(message, "error");
+    // Revert to buttons if geolocation fails permanently (like PERMISSION_DENIED)
+    if (error.code === error.PERMISSION_DENIED) {
+      movementController?.toggleStrategy();
+    }
+  }
+}
+
+/**
+ * Facade for the Movement System.
+ * Abstracts the complexity of switching between and managing different movement strategies.
+ */
+class MovementControllerFacade {
+  private currentStrategy: MovementStrategy;
+  private updatePositionCallback: (newLatLng: leaflet.LatLng) => void;
+  private moveCallback: (
+    direction: "north" | "south" | "east" | "west",
+  ) => void;
+  private initialStrategyType: "buttons" | "geolocation";
+
+  constructor(
+    initialStrategyType: "buttons" | "geolocation",
+    updatePositionCallback: (newLatLng: leaflet.LatLng) => void,
+    moveCallback: (direction: "north" | "south" | "east" | "west") => void,
+  ) {
+    this.updatePositionCallback = updatePositionCallback;
+    this.moveCallback = moveCallback;
+    this.initialStrategyType = initialStrategyType;
+    currentMovementStrategy = initialStrategyType;
+    this.currentStrategy = this.createStrategy(initialStrategyType);
+    this.currentStrategy.init();
+    this.renderControls(initialStrategyType);
+  }
+
+  private createStrategy(type: "buttons" | "geolocation"): MovementStrategy {
+    if (type === "geolocation") {
+      return new GeolocationMovementStrategy(this.updatePositionCallback);
+    } else {
+      return new ButtonMovementStrategy(this.moveCallback);
+    }
+  }
+
+  public toggleStrategy(): void {
+    this.stop(); // Stop current strategy first
+
+    const newStrategyType = currentMovementStrategy === "buttons"
+      ? "geolocation"
+      : "buttons";
+
+    currentMovementStrategy = newStrategyType;
+    this.currentStrategy = this.createStrategy(newStrategyType);
+    this.currentStrategy.init();
+    this.renderControls(newStrategyType);
+    updateStatusPanel(); // Update status panel to reflect new strategy
+    showMessage(`Switched to ${newStrategyType} movement!`, "info");
+  }
+
+  public stop(): void {
+    this.currentStrategy.stop();
+  }
+
+  // Renders the appropriate controls based on the active strategy
+  private renderControls(type: "buttons" | "geolocation"): void {
+    controlPanelDiv.innerHTML = ""; // Clear existing controls
+
+    const commonButtonClass =
+      "p-2 bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold rounded-lg shadow-md transition duration-200 text-sm";
+    const actionButtonClass =
+      "p-2 bg-red-500 hover:bg-red-600 text-white font-bold rounded-lg shadow-md transition duration-200 text-sm";
+
+    const controlButtonsHtml = `
+            <div class="flex space-x-2 w-full justify-center">
+                <button id="toggle-movement" class="${commonButtonClass}">
+                    Switch to ${type === "buttons" ? "GPS" : "Buttons"}
+                </button>
+                <button id="new-game-button" class="${actionButtonClass}">
+                    Start New Game
+                </button>
+            </div>
+        `;
+
+    let movementControlsHtml = "";
+    if (type === "buttons") {
+      const buttonClass =
+        "p-3 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-full shadow-lg transition duration-200 w-12 h-12 flex items-center justify-center text-xl";
+
+      movementControlsHtml = `
+                <div class="grid grid-cols-3 grid-rows-3 gap-1 md:gap-2 mt-4">
+                    <div class="col-start-2 row-start-1">
+                        <button id="move-north" class="${buttonClass}">↑</button>
+                    </div>
+                    <div class="col-start-1 row-start-2">
+                        <button id="move-west" class="${buttonClass}">←</button>
+                    </div>
+                    <div class="col-start-3 row-start-2">
+                        <button id="move-east" class="${buttonClass}">→</button>
+                    </div>
+                    <div class="col-start-2 row-start-3">
+                        <button id="move-south" class="${buttonClass}">↓</button>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-500 mt-2">Use buttons or arrow/WASD keys to move.</p>
+            `;
+    } else {
+      movementControlsHtml = `
+                <div class="p-4 bg-yellow-100 border border-yellow-400 rounded-md mt-4 text-center">
+                    <p class="font-semibold text-yellow-800">Geolocation Movement Active</p>
+                    <p class="text-sm text-yellow-700">Move your device in the real world to move your character.</p>
+                </div>
+             `;
+    }
+
+    controlPanelDiv.innerHTML = controlButtonsHtml + movementControlsHtml;
+
+    // Re-attach listeners for the new UI elements
+    document.getElementById("toggle-movement")?.addEventListener(
+      "click",
+      () => this.toggleStrategy(),
+    );
+    document.getElementById("new-game-button")?.addEventListener(
+      "click",
+      () => startNewGame(),
+    );
+
+    // Re-initialize the movement strategy to attach button listeners if needed
+    if (
+      type === "buttons" &&
+      this.currentStrategy instanceof ButtonMovementStrategy
+    ) {
+      this.currentStrategy.init(); // Re-attaches button/keyboard listeners
+    }
+  }
+}
+
+/**
+ * Initializes the game by setting up the map events, controls, and persistence.
  */
 function initializeGame(): void {
-  setupControls();
+  // Check for saved state and load it
+  const stateLoaded = loadGameState();
+
+  // 1. Determine initial movement strategy from query string (defaults to 'buttons')
+  // FIX: Use globalThis.location.search to resolve the 'no-window' linting error
+  const urlParams = new URLSearchParams(globalThis.location.search);
+  const movementParam = urlParams.get("movement");
+  currentMovementStrategy =
+    (movementParam === "geolocation" || movementParam === "buttons")
+      ? movementParam
+      : "buttons";
+
+  // 2. Initialize the Movement Facade
+  // The Facade handles setting up the correct UI and listeners internally
+  movementController = new MovementControllerFacade(
+    currentMovementStrategy,
+    updatePlayerPosition,
+    movePlayer,
+  );
 
   // The 'moveend' event triggers the memoryless re-render
   map.on("moveend", renderVisibleCells);
 
+  // Set the map view to the potentially loaded position
+  map.setView(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
+
+  // Update status panel for initial display
   updateStatusPanel();
 
   // Render initial cells
+  // This is called explicitly here, and also by map.on('moveend') after setView/panTo
+  if (!stateLoaded) {
+    // Only show this message if it's a fresh game run
+    showMessage("Welcome to GridCraft!", "info");
+  }
   renderVisibleCells();
 }
 
 // Wait for the map to be ready before initializing the game logic
 map.whenReady(() => {
-  map.setView(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
   initializeGame();
 });
 
